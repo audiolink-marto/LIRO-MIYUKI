@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Liro Miyuki v1.2</title>
+  <title>Liro Miyuki v1.3</title>
 
   <!-- Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -1281,11 +1281,85 @@
       transform: translateX(-50%) translateY(0);
     }
 
-    /* ── Responsive ── */
+    /* ── Responsive: tablet ── */
     @media (min-width: 600px) {
       .app-nav { max-width: 480px; left: 50%; transform: translateX(-50%); border-radius: 20px 20px 0 0; }
       #app-shell { max-width: 480px; margin: 0 auto; }
       #patterns-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+
+    /* ── Responsive: escritorio (layout tipo panel) ──────────────
+       Nav pasa a barra lateral izquierda, el contenido se despliega
+       en dos columnas: cuadrícula grande + controles a la derecha.
+       No toca HTML ni JS, solo reordena visualmente con CSS Grid. */
+    @media (min-width: 960px) {
+      #app-shell {
+        max-width: none;
+        margin: 0;
+        height: 100dvh;
+      }
+
+      /* Nav lateral fija */
+      .app-nav {
+        position: fixed;
+        left: 0; top: 0; bottom: 0; right: auto;
+        max-width: none;
+        width: 96px;
+        height: 100dvh;
+        flex-direction: column;
+        border-top: none;
+        border-right: 1px solid var(--surface2);
+        border-radius: 0;
+        padding-bottom: 0;
+        padding-top: 1rem;
+        justify-content: flex-start;
+        gap: 0.5rem;
+      }
+      .nav-btn { flex: none; padding: 0.9rem 0; font-size: 0.72rem; }
+      .nav-btn .nav-icon { font-size: 1.6rem; }
+
+      /* Columna principal desplazada por la nav lateral */
+      .app-header, .app-content { margin-left: 96px; }
+
+      .app-header {
+        height: 64px;
+        padding: 0 2rem;
+      }
+      .app-header h1 { font-size: 1.5rem; }
+
+      .app-content {
+        padding: 1.5rem 2rem 2rem;
+        max-width: 1200px;
+      }
+
+      .view { padding: 0; }
+
+      /* Panel del diseñador: cuadrícula grande a la izquierda,
+         controles apilados en una columna fija a la derecha */
+      #view-designer.active {
+        display: grid;
+        grid-template-columns: 1fr 340px;
+        grid-template-rows: auto;
+        gap: 0 2rem;
+        align-items: start;
+      }
+      #view-designer.active > .grid-scroll {
+        grid-column: 1;
+        grid-row: 1 / -1;
+        max-height: calc(100dvh - 64px - 3.5rem);
+        order: 1;
+      }
+      #view-designer.active > *:not(.grid-scroll) {
+        grid-column: 2;
+      }
+      .grid-cell { width: 28px; height: 28px; }
+
+      /* Catálogo y patrones aprovechan el ancho */
+      #view-catalog.active { max-width: 640px; }
+      #patterns-grid { grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+
+      /* Toast se centra respecto al contenido, no a toda la pantalla */
+      #toast { left: calc(50% + 48px); }
     }
   </style>
 </head>
