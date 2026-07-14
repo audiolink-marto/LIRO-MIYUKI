@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Liro Miyuki v1.0</title>
+  <title>Liro Miyuki v1.1</title>
 
   <!-- Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -59,6 +59,7 @@
     let gridCols = 10;
     let gridRows = 10;
     let gridData = [];
+    let stitchType = "loom"; // loom | peyote
     let selectedColor = "#C9A96E";
     let isPainting = false;
     let paintMode = "paint"; // paint | erase
@@ -76,40 +77,64 @@
     function renderGrid() {
       const container = document.getElementById("grid-container");
       if (!container) return;
-      container.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
+
+      // Modo telar: cuadrícula recta con CSS grid (comportamiento original)
+      // Modo peyote: filas en flex, con offset en filas impares (el desfase real del tejido)
+      container.classList.toggle("mode-peyote", stitchType === "peyote");
+      container.style.gridTemplateColumns = stitchType === "loom" ? `repeat(${gridCols}, 1fr)` : "";
+      container.style.display = stitchType === "loom" ? "grid" : "flex";
+      container.style.flexDirection = stitchType === "loom" ? "" : "column";
       container.innerHTML = "";
-      gridData.forEach((row, r) => {
-        row.forEach((color, c) => {
-          const cell = document.createElement("div");
-          cell.className = "grid-cell";
-          cell.style.backgroundColor = color;
-          cell.dataset.r = r;
-          cell.dataset.c = c;
 
-          const paint = () => {
-            const newColor = paintMode === "erase" ? "#F0EBE3" : selectedColor;
-            gridData[r][c] = newColor;
-            cell.style.backgroundColor = newColor;
-          };
+      const paintCell = (r, c, cellEl) => {
+        const newColor = paintMode === "erase" ? "#F0EBE3" : selectedColor;
+        gridData[r][c] = newColor;
+        cellEl.style.backgroundColor = newColor;
+      };
 
-          cell.addEventListener("mousedown", () => { isPainting = true; paint(); });
-          cell.addEventListener("mouseover", () => { if (isPainting) paint(); });
-          cell.addEventListener("touchstart", (e) => { e.preventDefault(); isPainting = true; paint(); }, { passive: false });
-          cell.addEventListener("touchmove", (e) => {
-            e.preventDefault();
-            const touch = e.touches[0];
-            const el = document.elementFromPoint(touch.clientX, touch.clientY);
-            if (el && el.classList.contains("grid-cell")) {
-              const tr = +el.dataset.r, tc = +el.dataset.c;
-              const newColor = paintMode === "erase" ? "#F0EBE3" : selectedColor;
-              gridData[tr][tc] = newColor;
-              el.style.backgroundColor = newColor;
-            }
-          }, { passive: false });
+      const buildCell = (r, c, color) => {
+        const cell = document.createElement("div");
+        cell.className = "grid-cell";
+        cell.style.backgroundColor = color;
+        cell.dataset.r = r;
+        cell.dataset.c = c;
 
-          container.appendChild(cell);
+        cell.addEventListener("mousedown", () => { isPainting = true; paintCell(r, c, cell); });
+        cell.addEventListener("mouseover", () => { if (isPainting) paintCell(r, c, cell); });
+        cell.addEventListener("touchstart", (e) => { e.preventDefault(); isPainting = true; paintCell(r, c, cell); }, { passive: false });
+        cell.addEventListener("touchmove", (e) => {
+          e.preventDefault();
+          const touch = e.touches[0];
+          const el = document.elementFromPoint(touch.clientX, touch.clientY);
+          if (el && el.classList.contains("grid-cell")) {
+            const tr = +el.dataset.r, tc = +el.dataset.c;
+            paintCell(tr, tc, el);
+          }
+        }, { passive: false });
+
+        return cell;
+      };
+
+      if (stitchType === "loom") {
+        gridData.forEach((row, r) => {
+          row.forEach((color, c) => {
+            container.appendChild(buildCell(r, c, color));
+          });
         });
-      });
+      } else {
+        // Peyote/brick: cada fila es un contenedor flex; filas impares llevan
+        // un margen de medio-celda para simular el desfase del tejido real
+        gridData.forEach((row, r) => {
+          const rowEl = document.createElement("div");
+          rowEl.className = "peyote-row";
+          if (r % 2 === 1) rowEl.classList.add("offset");
+          row.forEach((color, c) => {
+            rowEl.appendChild(buildCell(r, c, color));
+          });
+          container.appendChild(rowEl);
+        });
+      }
+
       document.addEventListener("mouseup", () => { isPainting = false; });
     }
 
@@ -159,7 +184,61 @@
       });
     }
 
-    // ── Upload to Cloudinary ─────────────────────────────────────
+    // ── Materials Calculator ─────────────────────────────────────
+    // Estimado: cuenta Miyuki 11/0 ≈ 20 cuentas por gramo (aproximado,
+    // varía según lote/forma). Se usa solo como referencia.
+    const BEADS_PER_GRAM = 20;
+
+    function calculateMaterials() {
+      const counts = {};
+      gridData.forEach(row => {
+        row.forEach(color => {
+          if (color === "#F0EBE3") return; // celda vacía, no cuenta
+          counts[color] = (counts[color] || 0) + 1;
+        });
+      });
+
+      const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      const totalBeads = entries.reduce((sum, [, n]) => sum + n, 0);
+      const totalGrams = (totalBeads / BEADS_PER_GRAM).toFixed(1);
+
+      const panel = document.getElementById("materials-panel");
+      if (entries.length === 0) {
+        panel.innerHTML = `<p class="empty-msg">Pinta algo en la cuadrícula primero 🎨</p>`;
+        panel.classList.add("show");
+        return;
+      }
+
+      const findBeadLabel = (hex) => {
+        const match = userBeads.find(b => b.hex.toLowerCase() === hex.toLowerCase());
+        return match ? `${match.code ? match.code + " · " : ""}${match.name}` : null;
+      };
+
+      panel.innerHTML = `
+        <div class="materials-summary">
+          <strong>${totalBeads}</strong> cuentas · <strong>~${totalGrams} g</strong> aprox.
+        </div>
+        <div class="materials-list">
+          ${entries.map(([hex, count]) => {
+            const label = findBeadLabel(hex);
+            const grams = (count / BEADS_PER_GRAM).toFixed(1);
+            return `
+              <div class="material-item">
+                <div class="bead-color" style="background:${hex}"></div>
+                <div class="bead-info">
+                  <span class="bead-name">${label || hex}</span>
+                  <span class="bead-code">${count} cuentas · ~${grams} g</span>
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+        <p class="materials-note">* Estimado con ${BEADS_PER_GRAM} cuentas/gramo (Miyuki 11/0). Puede variar según el lote.</p>
+      `;
+      panel.classList.add("show");
+    }
+
+
     async function uploadToCloudinary(blob) {
       const formData = new FormData();
       formData.append("file", blob);
@@ -186,6 +265,7 @@
           gridData: JSON.stringify(gridData),
           cols: gridCols,
           rows: gridRows,
+          stitchType,
           createdAt: serverTimestamp()
         });
         showToast("¡Patrón guardado! 🎉");
@@ -245,8 +325,12 @@
       gridCols = p.cols;
       gridRows = p.rows;
       gridData = JSON.parse(p.gridData);
+      stitchType = p.stitchType || "loom";
       document.getElementById("input-cols").value = gridCols;
       document.getElementById("input-rows").value = gridRows;
+      document.querySelectorAll(".stitch-btn").forEach(b => {
+        b.classList.toggle("active", b.dataset.stitch === stitchType);
+      });
       renderGrid();
       switchView("designer");
       showToast(`Patrón "${p.name}" cargado ✨`);
@@ -412,6 +496,26 @@
       });
 
       document.getElementById("btn-save-pattern").addEventListener("click", savePattern);
+
+      // Stitch type toggle
+      document.querySelectorAll(".stitch-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          stitchType = btn.dataset.stitch;
+          document.querySelectorAll(".stitch-btn").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          renderGrid();
+        });
+      });
+
+      // Materials calculator
+      document.getElementById("btn-materials").addEventListener("click", () => {
+        const panel = document.getElementById("materials-panel");
+        if (panel.classList.contains("show")) {
+          panel.classList.remove("show");
+        } else {
+          calculateMaterials();
+        }
+      });
 
       // Catalog
       document.getElementById("btn-add-bead").addEventListener("click", addBead);
@@ -708,6 +812,18 @@
       background: #D0C5BC;
       min-width: fit-content;
     }
+    #grid-container.mode-peyote {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .peyote-row {
+      display: flex;
+      gap: 1px;
+    }
+    .peyote-row.offset {
+      margin-left: 12px; /* medio ancho de celda (24px/2), simula el desfase real */
+    }
     .grid-cell {
       width: 24px; height: 24px;
       border-radius: 3px;
@@ -716,6 +832,60 @@
       flex-shrink: 0;
     }
     .grid-cell:hover { transform: scale(1.08); z-index: 1; position: relative; }
+
+    .stitch-toggle {
+      display: flex;
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 3px;
+      gap: 3px;
+    }
+    .stitch-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      font-family: 'Inter', sans-serif;
+      padding: 0.45rem 0.75rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .stitch-btn.active {
+      background: var(--gold);
+      color: #1A1A2E;
+      font-weight: 500;
+    }
+
+    .materials-panel {
+      display: none;
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+    }
+    .materials-panel.show { display: block; }
+    .materials-summary {
+      font-size: 0.95rem;
+      color: var(--cream);
+      padding-bottom: 0.75rem;
+      margin-bottom: 0.6rem;
+      border-bottom: 1px solid var(--surface2);
+    }
+    .materials-list {
+      display: flex; flex-direction: column; gap: 0.5rem;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+    .material-item {
+      display: flex; align-items: center; gap: 0.6rem;
+    }
+    .materials-note {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 0.75rem;
+      font-style: italic;
+    }
 
     .save-row {
       display: flex; gap: 0.5rem; align-items: center;
@@ -940,6 +1110,16 @@
           <button class="btn-sm btn-secondary" id="btn-erase">✏️ Borrar</button>
           <button class="btn-sm btn-secondary" id="btn-clear">🧹 Limpiar</button>
         </div>
+
+        <div class="designer-controls">
+          <div class="stitch-toggle">
+            <button class="stitch-btn active" data-stitch="loom">🪢 Telar</button>
+            <button class="stitch-btn" data-stitch="peyote">🧶 Peyote</button>
+          </div>
+          <button class="btn-sm btn-secondary" id="btn-materials">📊 Materiales</button>
+        </div>
+
+        <div class="materials-panel" id="materials-panel"></div>
 
         <div class="palette-row">
           <div id="bead-palette"></div>
