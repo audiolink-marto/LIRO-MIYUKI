@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Liro Miyuki v1.3</title>
+  <title>Liro Miyuki v1.4</title>
 
   <!-- Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -18,7 +18,9 @@
       signInWithEmailAndPassword,
       createUserWithEmailAndPassword,
       signOut,
-      onAuthStateChanged
+      onAuthStateChanged,
+      updateProfile,
+      sendPasswordResetEmail
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
     import {
       getFirestore,
@@ -30,7 +32,9 @@
       query,
       where,
       orderBy,
-      serverTimestamp
+      serverTimestamp,
+      setDoc,
+      getDoc
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
     // ── Firebase Config ──────────────────────────────────────────
@@ -69,6 +73,8 @@
     let weavingMode = false;
     let userBeads = [];
     let userPatterns = [];
+    let userProfile = { displayName: "", defaultCols: 10, defaultRows: 10 };
+    let profileLoaded = false; // evita reaplicar tamaño por defecto sobre un patrón ya cargado
 
     // ── Init Grid ────────────────────────────────────────────────
     function initGrid() {
@@ -202,9 +208,25 @@
       showToast("↩️ Deshecho");
     }
 
+    // ── Paneles exclusivos (Materiales / Por fila / Tejer) ────────
+    // Solo uno puede estar abierto a la vez, para que la columna de
+    // controles en escritorio no crezca sin control ("chorizo" vertical).
+    function closeOtherPanels(except) {
+      const panels = { materials: "materials-panel", rowcounts: "row-counts-panel", weaving: "weaving-panel" };
+      Object.entries(panels).forEach(([key, id]) => {
+        if (key !== except) document.getElementById(id).classList.remove("show");
+      });
+      if (except !== "weaving" && weavingMode) {
+        weavingMode = false;
+        document.getElementById("btn-weave").classList.remove("active");
+      }
+    }
+
     // ── Modo Tejer (contador de filas) ──────────────────────────
     function toggleWeavingMode() {
-      weavingMode = !weavingMode;
+      const turningOn = !weavingMode;
+      if (turningOn) closeOtherPanels("weaving");
+      weavingMode = turningOn;
       currentRow = 0;
       const panel = document.getElementById("weaving-panel");
       panel.classList.toggle("show", weavingMode);
@@ -232,6 +254,7 @@
         panel.classList.remove("show");
         return;
       }
+      closeOtherPanels("rowcounts");
       const findLabel = (hex) => {
         const match = userBeads.find(b => b.hex.toLowerCase() === hex.toLowerCase());
         return match ? (match.code || match.name) : hex;
@@ -544,6 +567,82 @@
       loadBeads();
     }
 
+    // ── Perfil ───────────────────────────────────────────────────
+    async function loadProfile() {
+      if (!currentUser) return;
+      try {
+        const ref = doc(db, "usuarios", currentUser.uid);
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const data = snap.data();
+          userProfile.displayName = data.displayName || currentUser.displayName || "";
+          userProfile.defaultCols = data.defaultCols || 10;
+          userProfile.defaultRows = data.defaultRows || 10;
+        } else {
+          userProfile.displayName = currentUser.displayName || "";
+        }
+        // Solo aplicamos el tamaño por defecto una vez, al primer login,
+        // para no pisar un patrón que la usuaria ya esté editando.
+        if (!profileLoaded) {
+          gridCols = userProfile.defaultCols;
+          gridRows = userProfile.defaultRows;
+          profileLoaded = true;
+        }
+      } catch (e) { console.error(e); }
+
+      // Refrescar contadores del resumen (patrones y cuentas)
+      await loadPatterns();
+
+      renderProfile();
+    }
+
+    function renderProfile() {
+      document.getElementById("profile-name-input").value = userProfile.displayName;
+      document.getElementById("profile-email").textContent = currentUser.email || "";
+      document.getElementById("stat-patterns").textContent = userPatterns.length;
+      document.getElementById("stat-beads").textContent = userBeads.length;
+      document.getElementById("profile-default-cols").value = userProfile.defaultCols;
+      document.getElementById("profile-default-rows").value = userProfile.defaultRows;
+
+      const usesPassword = currentUser.providerData.some(p => p.providerId === "password");
+      document.getElementById("btn-change-password").style.display = usesPassword ? "flex" : "none";
+    }
+
+    async function saveProfile() {
+      const name = document.getElementById("profile-name-input").value.trim();
+      const cols = Math.min(40, Math.max(2, +document.getElementById("profile-default-cols").value || 10));
+      const rows = Math.min(40, Math.max(2, +document.getElementById("profile-default-rows").value || 10));
+
+      if (!name) { showToast("Ponle un nombre a tu perfil"); return; }
+
+      try {
+        await updateProfile(currentUser, { displayName: name });
+        await setDoc(doc(db, "usuarios", currentUser.uid), {
+          displayName: name,
+          defaultCols: cols,
+          defaultRows: rows
+        }, { merge: true });
+
+        userProfile = { displayName: name, defaultCols: cols, defaultRows: rows };
+        document.getElementById("user-name").textContent = name;
+        showToast("Perfil actualizado ✨");
+      } catch (e) {
+        showToast("Error al guardar perfil 😕");
+        console.error(e);
+      }
+    }
+
+    async function changePassword() {
+      if (!currentUser?.email) return;
+      try {
+        await sendPasswordResetEmail(auth, currentUser.email);
+        showToast(`Correo enviado a ${currentUser.email} 📧`);
+      } catch (e) {
+        showToast("Error al enviar correo 😕");
+        console.error(e);
+      }
+    }
+
     // ── Auth ─────────────────────────────────────────────────────
     async function loginGoogle() {
       try {
@@ -582,6 +681,7 @@
       if (view === "designer") { renderGrid(); renderPalette(); }
       if (view === "patterns") loadPatterns();
       if (view === "catalog")  loadBeads();
+      if (view === "profile")  loadProfile();
     }
 
     // ── Toast ────────────────────────────────────────────────────
@@ -593,12 +693,15 @@
     }
 
     // ── Auth State ───────────────────────────────────────────────
-    onAuthStateChanged(auth, (user) => {
+    onAuthStateChanged(auth, async (user) => {
       currentUser = user;
       if (user) {
         document.getElementById("view-login").classList.remove("active");
         document.getElementById("app-shell").style.display = "flex";
         document.getElementById("user-name").textContent = user.displayName || user.email;
+        await loadProfile(); // aplica tamaño de cuadrícula por defecto antes de crearla
+        document.getElementById("input-cols").value = gridCols;
+        document.getElementById("input-rows").value = gridRows;
         switchView("designer");
         initGrid();
         loadBeads();
@@ -656,6 +759,7 @@
         if (panel.classList.contains("show")) {
           panel.classList.remove("show");
         } else {
+          closeOtherPanels("materials");
           calculateMaterials();
         }
       });
@@ -684,6 +788,10 @@
 
       // Catalog
       document.getElementById("btn-add-bead").addEventListener("click", addBead);
+
+      // Perfil
+      document.getElementById("btn-save-profile").addEventListener("click", saveProfile);
+      document.getElementById("btn-change-password").addEventListener("click", changePassword);
 
       // Color picker sync
       document.getElementById("color-picker").addEventListener("input", (e) => {
@@ -1118,6 +1226,45 @@
       border-radius: 10px;
     }
 
+    /* ── Perfil ── */
+    .profile-section {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 1rem;
+      margin-bottom: 0.85rem;
+      display: flex; flex-direction: column; gap: 0.6rem;
+    }
+    .profile-label {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .profile-email-row {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+    .profile-stats {
+      display: flex; gap: 0.75rem;
+    }
+    .stat-box {
+      flex: 1;
+      background: var(--surface2);
+      border-radius: var(--radius-sm);
+      padding: 0.75rem;
+      text-align: center;
+      display: flex; flex-direction: column; gap: 0.15rem;
+    }
+    .stat-number {
+      font-family: 'Playfair Display', serif;
+      font-size: 1.6rem;
+      color: var(--gold);
+    }
+    .stat-label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
     .save-row {
       display: flex; gap: 0.5rem; align-items: center;
     }
@@ -1487,7 +1634,38 @@
       <!-- Profile -->
       <div class="view" id="view-profile">
         <p class="section-title">Perfil</p>
-        <p style="color:var(--text-muted); font-size:0.85rem;">Próximamente más opciones aquí 🌸</p>
+
+        <div class="profile-section">
+          <p class="profile-label">Datos básicos</p>
+          <input type="text" id="profile-name-input" class="input-field" placeholder="Tu nombre" />
+          <p class="profile-email-row">📧 <span id="profile-email"></span></p>
+        </div>
+
+        <div class="profile-section">
+          <p class="profile-label">Resumen</p>
+          <div class="profile-stats">
+            <div class="stat-box">
+              <span class="stat-number" id="stat-patterns">0</span>
+              <span class="stat-label">Patrones</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-number" id="stat-beads">0</span>
+              <span class="stat-label">Cuentas</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="profile-section">
+          <p class="profile-label">Preferencias — tamaño de cuadrícula por defecto</p>
+          <div class="form-row">
+            <input type="number" id="profile-default-cols" min="2" max="40" placeholder="Columnas" />
+            <span style="color:var(--text-muted);">×</span>
+            <input type="number" id="profile-default-rows" min="2" max="40" placeholder="Filas" />
+          </div>
+        </div>
+
+        <button class="btn btn-primary" id="btn-save-profile" style="margin-bottom: 0.75rem;">Guardar cambios</button>
+        <button class="btn btn-secondary" id="btn-change-password" style="display:none;">🔑 Cambiar contraseña</button>
       </div>
 
     </main>
