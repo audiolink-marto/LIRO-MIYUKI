@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Liro Miyuki v1.1</title>
+  <title>Liro Miyuki v1.2</title>
 
   <!-- Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -63,6 +63,10 @@
     let selectedColor = "#C9A96E";
     let isPainting = false;
     let paintMode = "paint"; // paint | erase
+    let undoStack = [];
+    const UNDO_LIMIT = 40;
+    let currentRow = 0; // fila activa en modo "Tejer"
+    let weavingMode = false;
     let userBeads = [];
     let userPatterns = [];
 
@@ -95,13 +99,14 @@
       const buildCell = (r, c, color) => {
         const cell = document.createElement("div");
         cell.className = "grid-cell";
+        if (weavingMode && r === currentRow) cell.classList.add("row-active");
         cell.style.backgroundColor = color;
         cell.dataset.r = r;
         cell.dataset.c = c;
 
-        cell.addEventListener("mousedown", () => { isPainting = true; paintCell(r, c, cell); });
+        cell.addEventListener("mousedown", () => { pushUndoSnapshot(); isPainting = true; paintCell(r, c, cell); });
         cell.addEventListener("mouseover", () => { if (isPainting) paintCell(r, c, cell); });
-        cell.addEventListener("touchstart", (e) => { e.preventDefault(); isPainting = true; paintCell(r, c, cell); }, { passive: false });
+        cell.addEventListener("touchstart", (e) => { e.preventDefault(); pushUndoSnapshot(); isPainting = true; paintCell(r, c, cell); }, { passive: false });
         cell.addEventListener("touchmove", (e) => {
           e.preventDefault();
           const touch = e.touches[0];
@@ -184,7 +189,72 @@
       });
     }
 
-    // ── Materials Calculator ─────────────────────────────────────
+    // ── Undo ─────────────────────────────────────────────────────
+    function pushUndoSnapshot() {
+      undoStack.push(JSON.stringify(gridData));
+      if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    }
+
+    function undo() {
+      if (undoStack.length === 0) { showToast("Nada que deshacer"); return; }
+      gridData = JSON.parse(undoStack.pop());
+      renderGrid();
+      showToast("↩️ Deshecho");
+    }
+
+    // ── Modo Tejer (contador de filas) ──────────────────────────
+    function toggleWeavingMode() {
+      weavingMode = !weavingMode;
+      currentRow = 0;
+      const panel = document.getElementById("weaving-panel");
+      panel.classList.toggle("show", weavingMode);
+      document.getElementById("btn-weave").classList.toggle("active", weavingMode);
+      if (weavingMode) updateWeavingPanel();
+      renderGrid();
+    }
+
+    function updateWeavingPanel() {
+      document.getElementById("weaving-row-label").textContent = `Fila ${currentRow + 1} de ${gridRows}`;
+      document.querySelectorAll(".grid-cell-row-marker").forEach(el => el.remove());
+      renderGrid();
+    }
+
+    function stepRow(delta) {
+      currentRow = Math.max(0, Math.min(gridRows - 1, currentRow + delta));
+      updateWeavingPanel();
+    }
+
+    // ── Conteo por fila ──────────────────────────────────────────
+    function toggleRowCounts() {
+      const panel = document.getElementById("row-counts-panel");
+      const isShowing = panel.classList.contains("show");
+      if (isShowing) {
+        panel.classList.remove("show");
+        return;
+      }
+      const findLabel = (hex) => {
+        const match = userBeads.find(b => b.hex.toLowerCase() === hex.toLowerCase());
+        return match ? (match.code || match.name) : hex;
+      };
+      panel.innerHTML = gridData.map((row, i) => {
+        const counts = {};
+        row.forEach(hex => {
+          if (hex === "#F0EBE3") return;
+          counts[hex] = (counts[hex] || 0) + 1;
+        });
+        const entries = Object.entries(counts);
+        if (entries.length === 0) return "";
+        const parts = entries.map(([hex, n]) => `
+          <span class="row-count-chip">
+            <span class="chip-dot" style="background:${hex}"></span>${findLabel(hex)} ×${n}
+          </span>
+        `).join("");
+        return `<div class="row-count-line"><strong>Fila ${i + 1}:</strong> ${parts}</div>`;
+      }).join("") || `<p class="empty-msg">Pinta algo primero 🎨</p>`;
+      panel.classList.add("show");
+    }
+
+
     // Estimado: cuenta Miyuki 11/0 ≈ 20 cuentas por gramo (aproximado,
     // varía según lote/forma). Se usa solo como referencia.
     const BEADS_PER_GRAM = 20;
@@ -239,6 +309,60 @@
     }
 
 
+    // ── Exportar / Imprimir ──────────────────────────────────────
+    async function exportPattern() {
+      const name = document.getElementById("pattern-name").value.trim() || "Patrón sin nombre";
+      const blob = await captureGridImage();
+      const imgUrl = URL.createObjectURL(blob);
+
+      const counts = {};
+      gridData.forEach(row => row.forEach(hex => {
+        if (hex === "#F0EBE3") return;
+        counts[hex] = (counts[hex] || 0) + 1;
+      }));
+      const findLabel = (hex) => {
+        const match = userBeads.find(b => b.hex.toLowerCase() === hex.toLowerCase());
+        return match ? `${match.code ? match.code + " — " : ""}${match.name}` : hex;
+      };
+      const legendRows = Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([hex, n]) => `
+          <tr>
+            <td><span style="display:inline-block;width:16px;height:16px;border-radius:50%;background:${hex};border:1px solid #ccc;vertical-align:middle;"></span></td>
+            <td>${findLabel(hex)}</td>
+            <td>${n} cuentas</td>
+          </tr>
+        `).join("");
+
+      const printWindow = window.open("", "_blank");
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+          <meta charset="UTF-8" />
+          <title>${name} — Liro Miyuki</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 2rem; color: #1A1A2E; }
+            h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+            .meta { color: #666; font-size: 0.85rem; margin-bottom: 1.5rem; }
+            img { max-width: 100%; image-rendering: pixelated; border: 1px solid #ddd; margin-bottom: 1.5rem; }
+            table { border-collapse: collapse; width: 100%; max-width: 400px; }
+            td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; font-size: 0.85rem; }
+            @media print { body { padding: 0.5rem; } }
+          </style>
+        </head>
+        <body>
+          <h1>${name}</h1>
+          <p class="meta">${gridCols} × ${gridRows} · ${stitchType === "peyote" ? "Peyote / Brick stitch" : "Telar"}</p>
+          <img src="${imgUrl}" alt="${name}" />
+          <table>${legendRows}</table>
+          <script>window.onload = () => setTimeout(() => window.print(), 300);<\/script>
+        </body>
+        </html>
+      `);
+      printWindow.document.close();
+    }
+
     async function uploadToCloudinary(blob) {
       const formData = new FormData();
       formData.append("file", blob);
@@ -251,6 +375,8 @@
     // ── Save Pattern ─────────────────────────────────────────────
     async function savePattern() {
       const name = document.getElementById("pattern-name").value.trim();
+      const tagsRaw = document.getElementById("pattern-tags").value.trim();
+      const tags = tagsRaw ? tagsRaw.split(",").map(t => t.trim().toLowerCase()).filter(Boolean) : [];
       if (!name) { showToast("Ponle un nombre al patrón ✏️"); return; }
       if (!currentUser) return;
 
@@ -261,6 +387,7 @@
         await addDoc(collection(db, "patrones"), {
           uid: currentUser.uid,
           name,
+          tags,
           imageUrl,
           gridData: JSON.stringify(gridData),
           cols: gridCols,
@@ -270,6 +397,7 @@
         });
         showToast("¡Patrón guardado! 🎉");
         document.getElementById("pattern-name").value = "";
+        document.getElementById("pattern-tags").value = "";
         loadPatterns();
       } catch (e) {
         showToast("Error al guardar 😕");
@@ -294,15 +422,30 @@
     function renderPatterns() {
       const grid = document.getElementById("patterns-grid");
       if (!grid) return;
+
+      const searchTerm = (document.getElementById("patterns-search")?.value || "").trim().toLowerCase();
+      const filtered = searchTerm
+        ? userPatterns.filter(p =>
+            p.name.toLowerCase().includes(searchTerm) ||
+            (p.tags || []).some(t => t.includes(searchTerm))
+          )
+        : userPatterns;
+
       if (userPatterns.length === 0) {
         grid.innerHTML = `<p class="empty-msg">Aún no hay patrones guardados 🧵</p>`;
         return;
       }
-      grid.innerHTML = userPatterns.map(p => `
+      if (filtered.length === 0) {
+        grid.innerHTML = `<p class="empty-msg">Sin resultados para "${searchTerm}" 🔍</p>`;
+        return;
+      }
+
+      grid.innerHTML = filtered.map(p => `
         <div class="pattern-card">
           <img src="${p.imageUrl}" alt="${p.name}" />
           <div class="pattern-info">
             <span class="pattern-name-label">${p.name}</span>
+            ${(p.tags && p.tags.length) ? `<div class="pattern-tags">${p.tags.map(t => `<span class="tag-chip">${t}</span>`).join("")}</div>` : ""}
             <div class="pattern-actions">
               <button class="btn-load-pattern" data-id="${p.id}">Editar</button>
               <button class="btn-del-pattern" data-id="${p.id}">🗑</button>
@@ -516,6 +659,28 @@
           calculateMaterials();
         }
       });
+
+      // Undo
+      document.getElementById("btn-undo").addEventListener("click", undo);
+      document.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+          if (currentView === "designer") { e.preventDefault(); undo(); }
+        }
+      });
+
+      // Modo Tejer
+      document.getElementById("btn-weave").addEventListener("click", toggleWeavingMode);
+      document.getElementById("btn-row-prev").addEventListener("click", () => stepRow(-1));
+      document.getElementById("btn-row-next").addEventListener("click", () => stepRow(1));
+
+      // Conteo por fila
+      document.getElementById("btn-row-counts").addEventListener("click", toggleRowCounts);
+
+      // Exportar / Imprimir
+      document.getElementById("btn-export").addEventListener("click", exportPattern);
+
+      // Buscador de patrones
+      document.getElementById("patterns-search").addEventListener("input", renderPatterns);
 
       // Catalog
       document.getElementById("btn-add-bead").addEventListener("click", addBead);
@@ -887,6 +1052,72 @@
       font-style: italic;
     }
 
+    /* ── Weaving mode (contador de filas) ── */
+    .weaving-panel {
+      display: none;
+      align-items: center; justify-content: center; gap: 1rem;
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .weaving-panel.show { display: flex; }
+    #weaving-row-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+      color: var(--gold);
+      min-width: 110px;
+      text-align: center;
+    }
+    .grid-cell.row-active {
+      outline: 2px solid var(--gold);
+      outline-offset: -1px;
+    }
+
+    /* ── Row counts panel ── */
+    .row-counts-panel {
+      display: none;
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 0.85rem 1rem;
+      margin-bottom: 0.75rem;
+      max-height: 260px;
+      overflow-y: auto;
+    }
+    .row-counts-panel.show { display: block; }
+    .row-count-line {
+      font-size: 0.78rem;
+      padding: 0.35rem 0;
+      border-bottom: 1px solid var(--surface2);
+      line-height: 1.6;
+    }
+    .row-count-line:last-child { border-bottom: none; }
+    .row-count-chip {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      background: var(--surface2);
+      border-radius: 10px;
+      padding: 0.15rem 0.5rem;
+      margin: 0.15rem 0.2rem 0.15rem 0;
+      font-size: 0.72rem;
+    }
+    .chip-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      display: inline-block;
+    }
+
+    /* ── Pattern tags ── */
+    .pattern-tags {
+      display: flex; flex-wrap: wrap; gap: 0.3rem;
+      margin: 0.35rem 0;
+    }
+    .tag-chip {
+      background: var(--surface2);
+      color: var(--gold);
+      font-size: 0.65rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 10px;
+    }
+
     .save-row {
       display: flex; gap: 0.5rem; align-items: center;
     }
@@ -988,10 +1219,10 @@
     }
     .pattern-info {
       padding: 0.6rem 0.75rem;
-      display: flex; align-items: center; justify-content: space-between;
+      display: flex; flex-direction: column; gap: 0.3rem;
     }
     .pattern-name-label { font-size: 0.82rem; color: var(--cream); }
-    .pattern-actions { display: flex; gap: 0.4rem; }
+    .pattern-actions { display: flex; gap: 0.4rem; justify-content: space-between; }
 
     .empty-msg {
       color: var(--text-muted);
@@ -1107,6 +1338,7 @@
             <input type="number" id="input-rows" value="10" min="2" max="40" />
             <button class="btn-sm btn-accent" id="btn-apply-size">OK</button>
           </div>
+          <button class="btn-sm btn-secondary" id="btn-undo">↩️ Deshacer</button>
           <button class="btn-sm btn-secondary" id="btn-erase">✏️ Borrar</button>
           <button class="btn-sm btn-secondary" id="btn-clear">🧹 Limpiar</button>
         </div>
@@ -1117,9 +1349,22 @@
             <button class="stitch-btn" data-stitch="peyote">🧶 Peyote</button>
           </div>
           <button class="btn-sm btn-secondary" id="btn-materials">📊 Materiales</button>
+          <button class="btn-sm btn-secondary" id="btn-row-counts">📐 Por fila</button>
+        </div>
+
+        <div class="designer-controls">
+          <button class="btn-sm btn-secondary" id="btn-weave">🧵 Tejer</button>
+          <button class="btn-sm btn-secondary" id="btn-export">🖨️ Exportar</button>
+        </div>
+
+        <div class="weaving-panel" id="weaving-panel">
+          <button class="btn-sm btn-accent" id="btn-row-prev">◀</button>
+          <span id="weaving-row-label">Fila 1</span>
+          <button class="btn-sm btn-accent" id="btn-row-next">▶</button>
         </div>
 
         <div class="materials-panel" id="materials-panel"></div>
+        <div class="row-counts-panel" id="row-counts-panel"></div>
 
         <div class="palette-row">
           <div id="bead-palette"></div>
@@ -1135,6 +1380,9 @@
         <div class="save-row">
           <input type="text" id="pattern-name" placeholder="Nombre del patrón…" />
           <button class="btn-sm btn-accent" id="btn-save-pattern">💾 Guardar</button>
+        </div>
+        <div class="save-row" style="margin-top: 0.5rem;">
+          <input type="text" id="pattern-tags" placeholder="Etiquetas (pulsera, arete...) separadas por coma" />
         </div>
       </div>
 
@@ -1157,6 +1405,7 @@
       <!-- Patterns -->
       <div class="view" id="view-patterns">
         <p class="section-title">Mis Patrones</p>
+        <input type="text" id="patterns-search" class="input-field" placeholder="Buscar por nombre o etiqueta…" style="margin-bottom: 0.75rem;" />
         <div id="patterns-grid"></div>
       </div>
 
